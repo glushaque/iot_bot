@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 from services.pipeline import run_full_pipeline
+from services.cost_tracker import get_session_summary
 
 
 def main():
@@ -26,12 +27,16 @@ def main():
         visible_word=False,
     )
 
+    session_cost, session_calls = get_session_summary()
+
     result_json = output_dir / "telegram_result.json"
     result_json.write_text(
         json.dumps(
             {
                 "output_path": str(result["output_path"]),
                 "generated": result["generated"],
+                "session_cost_rub": round(session_cost, 2),
+                "session_calls": session_calls,
             },
             ensure_ascii=False,
             default=str,
@@ -40,6 +45,7 @@ def main():
     )
 
     print("\nTELEGRAM_RESULT:", result["output_path"])
+    print(f"Потрачено на эту сборку: {session_cost:.2f} ₽ ({session_calls} запросов к ИИ)")
 
 
 if __name__ == "__main__":

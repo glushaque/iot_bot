@@ -19,6 +19,8 @@ from dotenv import load_dotenv
 
 from services.questionnaire import parse_questionnaire
 
+from services.cost_tracker import get_stats_text
+
 
 load_dotenv()
 
@@ -46,6 +48,7 @@ MENU = ReplyKeyboardMarkup(
             KeyboardButton(text="📋 Посмотреть список"),
             KeyboardButton(text="🔄 Очистить"),
         ],
+        [KeyboardButton(text="📊 Статистика")],
     ],
     resize_keyboard=True,
 )
@@ -187,6 +190,9 @@ async def command_start(message: Message):
         reply_markup=MENU,
     )
 
+@dp.message(Command("stats"))
+async def command_stats(message: Message):
+    await message.answer(get_stats_text(), parse_mode="HTML")
 
 @dp.message(F.text == "📄 Загрузить опросный лист")
 async def ask_questionnaire(message: Message):
@@ -224,6 +230,11 @@ async def show_list(message: Message):
     )
 
 
+@dp.message(F.text == "📊 Статистика")
+async def show_stats(message: Message):
+    await message.answer(get_stats_text(), parse_mode="HTML")
+
+
 @dp.message(F.text == "🔄 Очистить")
 async def clear_session(message: Message):
     user_id = message.from_user.id
@@ -241,8 +252,6 @@ async def clear_session(message: Message):
         "Текущий опросный лист и результаты очищены.",
         reply_markup=MENU,
     )
-
-
 @dp.message(F.document)
 async def handle_document(message: Message):
     session = _session(message.from_user.id)
@@ -336,8 +345,19 @@ async def handle_document(message: Message):
             ),
         )
 
+        generated_text = _format_generated(worker_result.get("generated", []))
+
+        session_cost = worker_result.get("session_cost_rub", 0)
+        session_calls = worker_result.get("session_calls", 0)
+
+        if session_calls:
+            generated_text += (
+                f"\n\nПотрачено на ИИ-генерацию: {session_cost:.2f} ₽ "
+                f"({session_calls} запросов к нейросети)."
+            )
+
         await message.answer(
-            _format_generated(worker_result.get("generated", [])),
+            generated_text,
             reply_markup=MENU,
         )
 

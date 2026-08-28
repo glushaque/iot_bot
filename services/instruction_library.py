@@ -103,40 +103,41 @@ def _remove_iot_prefix(
 
 def _normalize_token(
     token: str,
-) -> str:
+) -> set[str]:
     token = token.strip(
         " \t\r\n.,;:()[]{}«»\"'"
     )
 
     if not token:
-        return ""
+        return set()
 
     parsed = morph.parse(
         token
     )
 
     if not parsed:
-        return token.lower()
+        return {token.lower()}
 
-    return (
-        parsed[0]
-        .normal_form
-        .lower()
-    )
+    return {
+        variant.normal_form.lower()
+        for variant in parsed
+    }
 
 
 def normalize_instruction_name(
     value: str,
-) -> str:
+) -> set[str]:
     """
     Нормализация для сравнения по смысловому имени.
 
-    Например:
-      электрик
-      электрика
-      ИОТ для электрика.docx
-
-    -> сопоставимое значение.
+    Возвращает МНОЖЕСТВО допустимых вариантов, а не одну строку.
+    Некоторые слова морфологически неоднозначны (например,
+    "электрика" — это одновременно родительный падеж профессии
+    "электрик" и отдельное бытовое существительное "электрика"
+    в именительном падеже). Чтобы не терять совпадения из-за
+    такой неоднозначности, берём ВСЕ варианты разбора каждого
+    слова и сравниваем по пересечению множеств, а не по точному
+    совпадению одной "самой вероятной" формы.
     """
     value = _clean_text(
         value
@@ -158,21 +159,40 @@ def normalize_instruction_name(
         flags=re.IGNORECASE,
     )
 
-    normalized_words = []
+    per_word_candidates = []
 
     for word in words:
-        normalized = _normalize_token(
+        candidates = _normalize_token(
             word
         )
 
-        if normalized:
-            normalized_words.append(
-                normalized
+        if candidates:
+            per_word_candidates.append(
+                candidates
             )
 
-    return " ".join(
-        normalized_words
-    )
+    if not per_word_candidates:
+        return set()
+
+    combos = {""}
+
+    for candidates in per_word_candidates:
+        new_combos = set()
+
+        for combo in combos:
+            for candidate in candidates:
+                new_combos.add(
+                    (combo + " " + candidate).strip()
+                )
+
+        combos = new_combos
+
+        if len(combos) > 200:
+            combos = set(
+                list(combos)[:200]
+            )
+
+    return combos
 
 
 def _detect_file_kind(
@@ -261,13 +281,13 @@ def find_instruction(
     чтобы должность и вид работ с одинаковым названием
     не схлопывались.
     """
-    target_normalized = (
+    target_candidates = (
         normalize_instruction_name(
             instruction_name
         )
     )
 
-    if not target_normalized:
+    if not target_candidates:
         return None
 
     requested_group = _kind_group(
@@ -278,15 +298,15 @@ def find_instruction(
     legacy_candidates = []
 
     for file_path in list_instruction_files():
-        file_normalized = (
+        file_candidates = (
             normalize_instruction_name(
                 file_path.name
             )
         )
 
-        if (
-            file_normalized
-            != target_normalized
+        if not (
+            target_candidates
+            & file_candidates
         ):
             continue
 
@@ -312,9 +332,6 @@ def find_instruction(
     if exact_candidates:
         return exact_candidates[0]
 
-    # Совместимость со старой библиотекой:
-    # если есть только старый файл без понятного префикса,
-    # используем его.
     if legacy_candidates:
         return legacy_candidates[0]
 

@@ -4,13 +4,18 @@ import time
 import json
 
 from dotenv import load_dotenv
-from openai import OpenAI, RateLimitError
+from openai import OpenAI, RateLimitError, APIConnectionError, APITimeoutError
 
 from services.instruction_validator import (
     validate_instruction,
     extract_points
 )
 
+from services.cost_tracker import (
+    log_generation_cost,
+    set_current_position,
+    reset_current_position,
+)
 
 load_dotenv()
 
@@ -37,19 +42,20 @@ if not YANDEX_FOLDER_ID:
 
 client = OpenAI(
     api_key=YANDEX_API_KEY,
-    base_url="https://ai.api.cloud.yandex.net/v1"
+    base_url="https://ai.api.cloud.yandex.net/v1",
+    timeout=60,
 )
 
 AI_MODEL = (
-    f"gpt://{YANDEX_FOLDER_ID}/yandexgpt/latest"
+    f"gpt://{YANDEX_FOLDER_ID}/yandexgpt/rc"
 )
 
 # Полная повторная генерация раздела нужна только при структурной ошибке
 # (пропущены/добавлены/переставлены подпункты).
-MAX_SECTION_RETRIES = 3
+MAX_SECTION_RETRIES = 2
 
 # Точечная перегенерация короткого подпункта.
-MAX_POINT_RETRIES = 3
+MAX_POINT_RETRIES = 2
 
 # Технический минимум остается 200 символов.
 MIN_POINT_LENGTH = 200
@@ -795,12 +801,14 @@ def build_section_requirements(section_number):
 
 def create_completion_with_retry(**kwargs):
     """
-    Повторяем запрос только при реальном 429 от API.
-    Искусственных пауз между разделами и попытками в обычной работе нет.
+    Повторяем запрос при лимите API (429) и при сбоях соединения
+    (например, кратковременные обрывы VPN/сети).
     """
     for attempt in range(1, 6):
         try:
-            return client.chat.completions.create(**kwargs)
+            response = client.chat.completions.create(**kwargs)
+            log_generation_cost(response)
+            return response
 
         except RateLimitError:
             if attempt >= 5:
@@ -811,6 +819,20 @@ def create_completion_with_retry(**kwargs):
             print()
             print(
                 f"Yandex API временно ограничил частоту запросов. "
+                f"Повтор через {wait_seconds} сек."
+            )
+
+            time.sleep(wait_seconds)
+
+        except (APIConnectionError, APITimeoutError) as error:
+            if attempt >= 5:
+                raise
+
+            wait_seconds = 5 * attempt
+
+            print()
+            print(
+                f"Сбой соединения с Yandex API: {error}. "
                 f"Повтор через {wait_seconds} сек."
             )
 
@@ -1910,7 +1932,7 @@ def semantic_review_and_repair(
     Каждый раунд = один проверочный запрос на весь раздел,
     затем точечно переписываются только отмеченные подпункты.
     """
-    max_semantic_rounds = 2
+    max_semantic_rounds = 1
 
     for review_round in range(1, max_semantic_rounds + 1):
         print(
@@ -2172,35 +2194,6 @@ def generate_valid_section(
     )
 
     return section_text
-
-
-def generate_instruction(instruction_name):
-    sections = []
-
-    for section_number in range(1, 6):
-        section_text = generate_valid_section(
-            instruction_name,
-            section_number
-        )
-
-        sections.append(section_text)
-
-    result = "\n\n".join(sections)
-
-    validation = validate_instruction(result)
-
-    if not validation["valid"]:
-        print()
-        print("Итоговая проверка не пройдена:")
-
-        for error in validation["errors"]:
-            print(f"  - {error}")
-
-        raise RuntimeError(
-            "Итоговая инструкция не прошла проверку"
-        )
-
-    return result
 
 # ======================================================================
 # V6: ФАКТИЧЕСКИЙ КОНТЕКСТ И ДЕТЕРМИНИРОВАННЫЙ ФАКТ-ЧЕКЕР
@@ -2871,79 +2864,11 @@ def find_quality_issues(
     )
 
 
-def generate_instruction(
-    instruction_name,
-    context=None,
-    questionnaire_path=None
-):
-    """
-    V6 сохраняет обратную совместимость:
-
-        generate_instruction("менеджер по продажам")
-
-    продолжает работать.
-
-    Для текущего локального проекта, если context не передан,
-    генератор сам пробует загрузить:
-        input/ОПРОСНЫЙ_ЛИСТ.docx
-
-    В Telegram-версии правильнее будет передавать context напрямую.
-    """
-    if context is None:
-        path = (
-            questionnaire_path
-            if questionnaire_path
-            else "input/ОПРОСНЫЙ_ЛИСТ.docx"
-        )
-        context = _v6_load_questionnaire_context(path)
-
-    context = _v6_normalize_context(context)
-
-    token = _V6_CONTEXT.set(context)
+def generate_instruction(instruction_name, context=None):
+    context_token = _V6_CONTEXT.set(context or {})
+    position_token = set_current_position(instruction_name)
 
     try:
-        if context:
-            print("Контекст исходных данных: подключен")
-
-            if context["high_risk_works"] == []:
-                print(
-                    "  Работы повышенной опасности: "
-                    "в опросном листе указано отсутствие"
-                )
-
-            print(
-                "  Посменная работа: "
-                + (
-                    "неизвестно"
-                    if context["shift_work"] is None
-                    else str(context["shift_work"])
-                )
-            )
-            print(
-                "  Опасные вещества: "
-                + (
-                    "неизвестно"
-                    if context["dangerous_substances"] is None
-                    else str(context["dangerous_substances"])
-                )
-            )
-            print(
-                "  Опасные отходы: "
-                + (
-                    "неизвестно"
-                    if context["dangerous_waste"] is None
-                    else str(context["dangerous_waste"])
-                )
-            )
-            print(
-                "  Конкретные профриски: "
-                + (
-                    "не переданы"
-                    if not context["professional_risks"]
-                    else ", ".join(context["professional_risks"])
-                )
-            )
-
         sections = []
 
         for section_number in range(1, 6):
@@ -2951,6 +2876,7 @@ def generate_instruction(
                 instruction_name,
                 section_number
             )
+
             sections.append(section_text)
 
         result = "\n\n".join(sections)
@@ -2969,7 +2895,7 @@ def generate_instruction(
             )
 
         return result
-
     finally:
-        _V6_CONTEXT.reset(token)
+        reset_current_position(position_token)
+        _V6_CONTEXT.reset(context_token)
 

@@ -8,3 +8,4 @@ runtime/
 library/
 input/
 telegram_result.json
+bot_log.txt
