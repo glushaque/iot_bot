@@ -60,7 +60,8 @@ def validate_instruction(text):
     for point in points:
         content_length = len(point["content"])
 
-        if content_length < 200:
+        # Держать в синхроне с MIN_POINT_LENGTH в instruction_generator.py
+        if content_length < 150:
             short_points.append({
                 "section": point["section"],
                 "number": point["number"],

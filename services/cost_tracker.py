@@ -4,8 +4,8 @@ import json
 import os
 from datetime import date
 
-PRICE_PER_1K_INPUT_RUB = 1.20
-PRICE_PER_1K_OUTPUT_RUB = 1.20
+PRICE_PER_1K_INPUT_RUB = 0.80
+PRICE_PER_1K_OUTPUT_RUB = 0.80
 
 _COST_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

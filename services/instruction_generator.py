@@ -57,13 +57,15 @@ MAX_SECTION_RETRIES = 2
 # Точечная перегенерация короткого подпункта.
 MAX_POINT_RETRIES = 2
 
-# Технический минимум остается 200 символов.
-MIN_POINT_LENGTH = 200
+# Технический минимум снижен со 200 до 150 символов для экономии
+# на точечных перегенерациях. Синхронизировано с проверкой в
+# instruction_validator.py (там тот же порог продублирован).
+MIN_POINT_LENGTH = 150
 
-# При первичной и точечной генерации просим заметный запас по длине.
-# Технический валидатор по-прежнему принимает пункты от 200 символов.
-TARGET_POINT_MIN = 350
-TARGET_POINT_MAX = 500
+# При первичной и точечной генерации просим запас по длине.
+# Технический валидатор по-прежнему принимает пункты от MIN_POINT_LENGTH.
+TARGET_POINT_MIN = 250
+TARGET_POINT_MAX = 350
 
 # Содержательные проверки выполняются адресно по конкретным подпунктам.
 # Это не общий "черный список": фраза считается ошибкой только там,
@@ -270,6 +272,24 @@ COMMON_RULES = """
 Не объясняй, почему выбран тот или иной текст.
 """
 
+COMMON_RULES_SHORT = """
+Кратко, без Markdown и списков внутри текста.
+
+Не выдумывай: оборудование, машины, транспорт, химические/опасные
+вещества, СИЗ, документы (журналы/акты/сертификаты), обязанности
+ответственного по охране труда, пожарной безопасности, техобслуживанию,
+если это прямо не следует из должности или исходных данных.
+
+Не утверждай безусловно сменность, наличие/отсутствие опасных веществ
+или отходов, если это не задано явно — используй условную формулировку
+("если...", "при отсутствии...").
+
+Не возлагай на работника технические действия, требующие специальной
+квалификации или допуска (ремонт, отключение систем, перекрытие газа).
+
+Не указывай номера нормативных актов — только "в соответствии с
+действующим законодательством РФ".
+"""
 
 SECTION_SETTINGS = {
     1: {
@@ -1241,7 +1261,7 @@ def regenerate_single_point(
 Техническое задание подпункта:
 {requirement}
 
-{COMMON_RULES}
+{COMMON_RULES_SHORT}
 
 Предыдущий текст подпункта:
 {old_text}
@@ -2443,6 +2463,85 @@ def _v6_instruction_prompt_name(instruction_name):
     )
 
 
+def _v6_context_block_short(instruction_name):
+    """
+    Сокращённая версия фактического контекста — для точечного
+    ремонта уже сгенерированного пункта (repair_short_points /
+    repair_quality_points / repair_semantic_points).
+
+    Сохраняет ВСЕ факты (работы, повышенная опасность, сменность,
+    вещества, отходы, риски, СИЗ) без изменений — убраны только
+    развёрнутые пояснения и примеры формулировок, которые модель
+    уже получила на этапе generate_section и повторно оплачивать
+    на каждом точечном ремонте не нужно.
+    """
+    ctx = _v6_get_context()
+
+    regular_works = ctx["regular_works"]
+    position_works = ctx["position_works"]
+    high_risk_works = ctx["high_risk_works"]
+    risks = ctx["professional_risks"]
+    ppe = ctx["ppe"]
+
+    regular_text = (
+        "; ".join(regular_works)
+        if regular_works
+        else "не указаны"
+    )
+
+    position_text = (
+        "; ".join(position_works)
+        if position_works
+        else "не привязаны к данной должности отдельными исходными данными"
+    )
+
+    if high_risk_works is None:
+        high_risk_text = (
+            "НЕИЗВЕСТНО — нельзя утверждать наличие или отсутствие"
+        )
+    elif high_risk_works:
+        high_risk_text = "; ".join(high_risk_works)
+    else:
+        high_risk_text = "ОТСУТСТВУЮТ"
+
+    risks_text = (
+        "; ".join(risks)
+        if risks
+        else "НЕ ПЕРЕДАНЫ — не придумывать"
+    )
+
+    ppe_text = (
+        "; ".join(ppe)
+        if ppe
+        else "НЕ ПЕРЕДАНЫ — не придумывать"
+    )
+
+    return f"""
+ФАКТИЧЕСКИЙ КОНТЕКСТ (кратко, факты не менять):
+
+Должность: {instruction_name}
+Работы организации (не приписывать этой должности автоматически): {regular_text}
+Работы этой должности: {position_text}
+Работы повышенной опасности: {high_risk_text}
+Посменная работа: {_v6_bool_fact_text(ctx["shift_work"])}
+Опасные вещества: {_v6_bool_fact_text(ctx["dangerous_substances"])}
+Опасные отходы: {_v6_bool_fact_text(ctx["dangerous_waste"])}
+Профессиональные риски: {risks_text}
+СИЗ: {ppe_text}
+
+Если факт НЕИЗВЕСТНО/НЕ ПЕРЕДАН — не превращать его в утверждение,
+использовать условную конструкцию ("если...", "при наличии...").
+Не делать вывод только из названия профессии.
+"""
+
+
+def _v6_instruction_prompt_name_short(instruction_name):
+    return (
+        f"{instruction_name}\n\n"
+        f"{_v6_context_block_short(instruction_name)}"
+    )
+
+
 def generate_section(
     instruction_name,
     section_number,
@@ -2463,7 +2562,7 @@ def regenerate_single_point(
     correction_note=""
 ):
     return _v5_regenerate_single_point(
-        instruction_name=_v6_instruction_prompt_name(
+        instruction_name=_v6_instruction_prompt_name_short(
             instruction_name
         ),
         section_number=section_number,
